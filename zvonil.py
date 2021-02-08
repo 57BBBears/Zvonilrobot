@@ -1,24 +1,51 @@
+import re
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime
 import time
 import asyncio
 import aiohttp
 from aiohttp import web
+import json
 
 # TODO add format string for output message (before, result, after)
 # TODO check input phone number
 # TODO send info messages back during getting info (Starting..., Busy... etc.)
 class Zvonilbot:
-    def __init__(self, token: str, site: str, boturl='https://api.telegram.org/bot'):
+    BOT_URL = 'https://api.telegram.org/bot'
+
+    def __init__(self, token: str, site: str = 'https://www.neberitrubku.ru/nomer-telefona/'):
         self.token = token
-        self.boturl = boturl + token + '/'
+        self.boturl = self.BOT_URL + token + '/'
         self.site = site
         self.update_id = None
         self._headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36'}
         self._delay = 0.2
         self._bot_timeout = 30
+        # TODO add messages pattern (error, success, ok, etc)
+        self.message = {'wrong number': 'Ыть! Неправильно набран номер.\nПопробуй использовать цифры.',
+                        'error': 'Упс! Что-то пошло не так. Попробуй ещё раз...',
+                        'ok': '{}\nУ меня ничего нет на него... Возможно это и не спам!',
+                        'not ok': 'Так-так. Подозреваемый {phone} \
+                                   \n\n{head} \
+                                   \n\nКатегории:\n{categories}\
+                                   \n\nРейтинг:\n{ratings}'}
         # TODO add config
+
+    def _check_phone(self, string: str, pattern: str = '', delete: str = '') -> str:
+        if delete:
+            string = re.sub(delete, '', string)
+
+        if pattern:
+            check = re.match(pattern, string)
+
+        if not check:
+            return ''
+        else:
+            # russian number without 8 at the begining
+            if string[0] == '9':
+                string = '8' + string
+
+            return string
 
     async def getinfo(self, phone: str, session: aiohttp.ClientSession) -> dict:
         # TODO write specific function to write errors in file
@@ -33,8 +60,7 @@ class Zvonilbot:
         ratings = []
         categories = []
         error_msg = ''
-        #headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36'}
-        #TODO check phone
+
         async with session.get(self.site+phone, headers=self._headers) as r:
             try:
                 assert r.status == 200
@@ -54,7 +80,7 @@ class Zvonilbot:
             error_msg += '\r'+time.strftime('%d.%m.%Y %H:%M:%S', time.localtime())+' | '+phone+' | div:number | ' + str(error)
             print(error_msg)
         else:
-            head = [item.text for item in head]
+            head = [item.text.strip() for item in head]
 
         try:
             ratings = soup.find('div', {'class1': 'ratings'}).find_all('li')
@@ -72,12 +98,31 @@ class Zvonilbot:
         else:
             categories = [cat.text for cat in categories]
         print(error_msg)
+        # TODO replace with async log
         if error_msg:
             with open('error.txt', 'a', encoding='utf-8') as error_file:
                 error_file.write(error_msg)
 
         return {'phone': phone, 'head': head, 'ratings': ratings, 'categories': categories}
 
+    async def phone_to_msg(self, phone: str, session: aiohttp.ClientSession) -> str:
+        phone = self._check_phone(phone, r'^(8|7|\+)?\d{10,12}$', r' |\-|\(|\)')
+        if not phone:
+            text = self.message['wrong number']
+        else:
+            info = await self.getinfo(phone, session)
+
+            print(info)
+            if 'errors' in info:
+                text = self.message['send error']
+            elif not info['ratings'] and not info['categories']:
+                text = self.message['ok'].format(phone)
+            else:
+                text = self.message['not ok'].format(phone=phone,
+                                                     head='\n'.join(info['head']),
+                                                     categories='\n'.join(info['categories']),
+                                                     ratings='\n'.join(info['ratings']))
+        return text
 
     def getupdates(self, offset=''):
         params = {}
@@ -105,17 +150,32 @@ class Zvonilbot:
             return False
 
     async def sendmessage(self, chat_id: str, message: str, session: aiohttp.ClientSession):
-        async with session.get(self.boturl+'sendMessage', params={'chat_id': chat_id, 'text': message}) as r:
+        headers = {
+            'Content-Type': 'application/json'
+        }
+        message = {
+            'chat_id': chat_id,
+            'text': message
+        }
+
+        #async with session.get(self.boturl+'sendMessage', params={'chat_id': chat_id, 'text': message}) as r:
+        async with session.post(self.boturl+'sendMessage', data=json.dumps(message), headers=headers) as res:
             try:
-                assert r.status == 200
+                assert res.status == 200
             except Exception as error:
                 error_msg = '\r' + time.strftime('%d.%m.%Y %H:%M:%S',
                                                  time.localtime()) + ' | ' + chat_id + ' | Send message | ' +\
-                                                 str(r.status) + str(error)
+                                                 str(res.status) + str(error)
                 print(error_msg)
-                return {'errors': 'Connection error: ' + error}
+                return {'errors': 'Sending message error: ' + error}
             else:
-                answer = await r.json()
+                answer = await res.json()
+
+        if 'ok' in answer and answer['ok']:
+            return answer
+        else:
+            return {'errors': answer}
+
         """
         try:
             r = requests.get(self.boturl+'sendMessage', params={'chat_id': chat_id, 'text': message})
@@ -131,23 +191,10 @@ class Zvonilbot:
         answer = r.json()
         """
 
-        if 'ok' in answer and answer['ok']:
-            return answer
-        else:
-            return {'errors': answer}
 
-    async def _getinfo_sendmessage(self, chat_id, phone, session):
-        info = await self.getinfo(phone, session)
-        print(info)
-        if 'errors' in info:
-            text = 'Упс! Что-то пошло не так. Попробуй ещё раз...'
-        elif not info['ratings'] and not info['categories']:
-            text = 'У меня ничего нет на него... Возможно это и не спам!'
-        else:
-            text = 'Так-так. Подозреваемый ' + info['phone'] + \
-                   '\n\n\n'.join(info['head']) + \
-                   '\n\nКатегории:' + '\n'.join(info['categories']) + \
-                   '\n\nРейтинг:' + '\n'.join(info['ratings'])
+
+    async def _getinfo_sendmessage(self, chat_id: str, phone: str, session: aiohttp.ClientSession):
+        text = await self.phone_to_msg(phone, session)
         sent = await self.sendmessage(chat_id, text, session)
         if 'errors' in sent:
             print(sent['errors'])
@@ -155,7 +202,26 @@ class Zvonilbot:
         else:
             print(sent)
             return sent
+        """
+        phone = self._check_phone(phone, r'^(8|7|\+)?\d{10,12}$', r' |\-|\(|\)')
+        if phone:
+            text = await self.phone_to_msg(phone, session)
+        else:
+            text = self.message['wrong number']
 
+        
+            return await self.sendmessage(chat_id, text, session)
+        print(info)
+        if 'errors' in info:
+            text = self.message['send error']
+        elif not info['ratings'] and not info['categories']:
+            text = self.message['ok'].format(phone)
+        else:
+            text = self.message['not ok'].format(phone=phone,
+                                                 head='\n'.join(info['head']),
+                                                 categories='\n'.join(info['categories']),
+                                                 ratings='\n'.join(info['ratings']))
+        """
 
     async def _longpolling(self):
         while True:
@@ -170,14 +236,12 @@ class Zvonilbot:
                         phone = messages[msg]
                         info_task = await asyncio.create_task(self._getinfo_sendmessage(msg, phone, session))
                         print(time.strftime('%d.%m.%Y %H:%M:%S', time.localtime())+' Done: '+str(info_task))
-
-
             else:
                 print(time.strftime('%d.%m.%Y %H:%M:%S', time.localtime())+' No updates...')
             await asyncio.sleep(self._bot_timeout)
 
     def longpolling(self):
-        print('Longpolling started.')
+        print('Long polling has started. (Press CTRL+C to stop)')
         #asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         #asyncio.run(self._longpolling())
         loop = asyncio.get_event_loop()
@@ -186,25 +250,36 @@ class Zvonilbot:
             loop.run_forever()
         except KeyboardInterrupt:
             loop.stop()
-            exit('Longpolling stoped.')
+            exit('Long polling has stopped.')
 
 
     def startserver(self, route: str = '/'):
+        print('Server has started.')
         app = web.Application()
-        app.add_routes([web.get(route), self._webhook])
+        app.add_routes([web.get(route, self._startserver)])
         web.run_app(app)
+        print('Server has stopped.')
 
     async def _webhook(self, request):
-        loop = asyncio.get_event_loop()
-        async with aiohttp.ClientSession() as session:
-            pass
-        loop.run_forever()
+        data = await request.json()
+        chat_id = data['message']['chat']['id']
+        phone = data['message']['text']
+        phone = self._check_phone(phone, r'^(8|7|\+)?\d{10,12}$', r' |\-|\(|\)')
 
+        async with aiohttp.ClientSession() as session:
+            text = await self.phone_to_msg(phone, session)
+            resp = await self.sendmessage(chat_id, text, session)
+
+        if 'errors' in resp:
+            return web.Response(500)
+        else:
+            return web.Response(200)
 
 
 if __name__ == '__main__':
-    bot = Zvonilbot('1374908831:AAEv6e_nJ3JgsTD6HX82fSLlWAwXeTiNQEI', 'https://www.neberitrubku.ru/nomer-telefona/')
-    bot.longpolling()
+    bot = Zvonilbot('1374908831:AAEv6e_nJ3JgsTD6HX82fSLlWAwXeTiNQEI')
+    #bot.longpolling()
+    bot.startserver()
     """
     try:
         bot.longpolling()
