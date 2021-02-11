@@ -1,5 +1,5 @@
 .idea
-error.txt
-log.txt
+bot.log
+error.log
 test.html
 venv

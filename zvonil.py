@@ -1,14 +1,13 @@
 import re
-import requests
 from bs4 import BeautifulSoup
-import time
 import asyncio
 import aiohttp
 from aiohttp import web
 import json
+import logging
+import logging.config
 
 # TODO add format string for output message (before, result, after)
-# TODO check input phone number
 # TODO send info messages back during getting info (Starting..., Busy... etc.)
 class Zvonilbot:
     BOT_URL = 'https://api.telegram.org/bot'
@@ -19,9 +18,14 @@ class Zvonilbot:
         self.site = site
         self.update_id = None
         self._headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36'}
+        # Pause between connections for parser
         self._delay = 0.2
+        # Pause between getting bot updates
         self._bot_timeout = 30
-        # TODO add messages pattern (error, success, ok, etc)
+
+        self.logger = self.get_logger()
+
+
         self.message = {'wrong number': 'Ыть! Неправильно набран номер.\nПопробуй использовать цифры.',
                         'error': 'Упс! Что-то пошло не так. Попробуй ещё раз...',
                         'ok': '{}\nУ меня ничего нет на него... Возможно это и не спам!',
@@ -30,6 +34,85 @@ class Zvonilbot:
                                    \n\nКатегории:\n{categories}\
                                    \n\nРейтинг:\n{ratings}'}
         # TODO add config
+    
+    def get_logger(self, log_format='%(asctime)s:%(name)s:%(message)s',
+               console_lvl='DEBUG', info_lvl='INFO', error_lvl='ERROR', config=None):
+        """
+        Logger for logging requests to bot and errors.
+        :param log_format: Format string for logger output. Default: '%(asctime)s:%(name)s:%(message)s'
+        :param console_lvl: Output level for console messages. Default: 'ERROR'
+        :param info_lvl: Output level for requests to bot. Default: 'INFO'
+        :param error_lvl: Output level for error messages. Default: 'ERROR'
+        :param config: full config for all options
+        :return: logger instance
+        """
+        if not config:
+            config = {
+                'version': 1,
+                'disable_existing_loggers': True,
+                'formatters': {
+                    'standard': {
+                        'format': log_format
+                    },
+                },
+                'handlers': {
+                    'console': {
+                        'level': console_lvl,
+                        'formatter': 'standard',
+                        'class': 'logging.StreamHandler',
+                        'stream': 'ext://sys.stdout',
+                    },
+                    'bot': {
+                        'level': info_lvl,
+                        'formatter': 'standard',
+                        'class': 'logging.handlers.RotatingFileHandler',
+                        'filename': 'bot.log',
+                        'maxBytes': 50_000_024,
+                        'backupCount': 10
+                    },
+                    'error': {
+                        'level': error_lvl,
+                        'formatter': 'standard',
+                        'class': 'logging.handlers.RotatingFileHandler',
+                        'filename': 'error.log',
+                        'maxBytes': 10_000_024,
+                        'backupCount': 10
+                    }
+                },
+                'loggers': {
+                    '': {  # root logger
+                        'handlers': ['console', 'bot', 'error'],
+                        'level': 'DEBUG',
+                        #'propagate': True,
+                    }
+                },
+            }
+        else:
+            config = config
+
+        logging.config.dictConfig(config)
+        """
+        logger.setLevel(logging.INFO)
+        log_format = self.log_format
+
+        #console error messages
+        console = logging.StreamHandler()
+        console.setFormatter(log_format)
+        console.setLevel(console_lvl)
+        #write all requests to a file
+        bot_handler = logging.handlers.RotatingFileHandler('bot.log', maxBytes=50_000_024, backupCount=10)
+        bot_handler.setFormatter(log_format)
+        bot_handler.setLevel(info_lvl)
+        #write errors to a file
+        error_handler = logging.handlers.RotatingFileHandler('error.log', maxBytes=10_000_024, backupCount=10)
+        error_handler.setFormatter(log_format)
+        error_handler.setLevel(error_lvl)
+
+        logger.addHandler(bot_handler)
+        logger.addHandler(error_handler)
+        logger.addHandler(console)
+        """
+        return logging.getLogger(__name__)
 
     def _check_phone(self, string: str, pattern: str = '', delete: str = '') -> str:
         if delete:
@@ -48,7 +131,6 @@ class Zvonilbot:
             return string
 
     async def getinfo(self, phone: str, session: aiohttp.ClientSession) -> dict:
-        # TODO write specific function to write errors in file
         # TODO add parameter list with html tags i.g. div#id for searching on site
         """
         Get info about phone number.
@@ -65,11 +147,14 @@ class Zvonilbot:
             try:
                 assert r.status == 200
             except Exception as error:
+                self.logger.error(phone+':Parser connection error. '+str(r.status) + ' ' + str(error))
+                """
                 error_msg += '\r' + time.strftime('%d.%m.%Y %H:%M:%S',
                                                   time.localtime()) + ' | ' + phone + '| Connection | ' +\
                                                   str(r.status) + ' ' + str(error)
                 print(error_msg)
-                return {'errors': 'Connection error: ' + str(error)}
+                """
+                return None
 
             html = await r.text()
 
@@ -77,31 +162,26 @@ class Zvonilbot:
         try:
             head = soup.find('div', {'class': 'number'}).find_all('span')
         except AttributeError as error:
-            error_msg += '\r'+time.strftime('%d.%m.%Y %H:%M:%S', time.localtime())+' | '+phone+' | div:number | ' + str(error)
-            print(error_msg)
+            error_msg += 'Can\'t find div number. ' + str(error)
         else:
             head = [item.text.strip() for item in head]
 
         try:
-            ratings = soup.find('div', {'class1': 'ratings'}).find_all('li')
+            ratings = soup.find('div', {'class': 'ratings'}).find_all('li')
         except AttributeError as error:
-            error_msg += '\r'+time.strftime('%d.%m.%Y %H:%M:%S', time.localtime())+' | '+phone+' | '+'div:ratings | ' + str(error)
-            print(error_msg)
+            error_msg += '\nCan\'t find div ratings. ' + str(error)
         else:
             ratings = [rate.text for rate in ratings]
 
         try:
             categories = soup.find('div', {'class': 'categories'}).find_all('li')
         except AttributeError as error:
-            error_msg += '\r'+time.strftime('%d.%m.%Y %H:%M:%S', time.localtime())+' | '+phone+' | div:categories | ' + str(error)
-            print(error_msg)
+            error_msg += '\nCan\'t find div categories. ' + str(error)
         else:
             categories = [cat.text for cat in categories]
-        print(error_msg)
-        # TODO replace with async log
+
         if error_msg:
-            with open('error.txt', 'a', encoding='utf-8') as error_file:
-                error_file.write(error_msg)
+            self.logger.warning(phone+':'+error_msg)
 
         return {'phone': phone, 'head': head, 'ratings': ratings, 'categories': categories}
 
@@ -112,9 +192,8 @@ class Zvonilbot:
         else:
             info = await self.getinfo(phone, session)
 
-            print(info)
-            if 'errors' in info:
-                text = self.message['send error']
+            if not info:
+                text = self.message['error']
             elif not info['ratings'] and not info['categories']:
                 text = self.message['ok'].format(phone)
             else:
@@ -124,7 +203,7 @@ class Zvonilbot:
                                                      ratings='\n'.join(info['ratings']))
         return text
 
-    def getupdates(self, offset=''):
+    async def getupdates(self, session, offset=''):
         params = {}
         if offset:
             #get update with offset explicitly
@@ -132,14 +211,15 @@ class Zvonilbot:
         elif self.update_id is not None:
             params['offset'] = self.update_id+1
 
-        try:
-            r = requests.get(self.boturl+'getUpdates', params=params)
-        except requests.exceptions.ConnectionError as error:
-            error_msg = '\r'+time.strftime('%d.%m.%Y %H:%M:%S', time.localtime())+' | '+offset+'| getUpdates | ' + str(error)
-            print(error_msg)
-            return {'errors': 'Connection error: '+error}
+        async with session.get(self.boturl + 'getUpdates', params=params) as res:
+            try:
+                assert res.status == 200
+            except Exception as error:
+                self.logger.error(':Can\'t get bot updates. ' + res.status + error)
+                return None
+            else:
+                answer = await res.json()
 
-        answer = r.json()
         if answer['result']:
             self.update_id = answer['result'][-1]['update_id']
             chats = {}
@@ -147,7 +227,7 @@ class Zvonilbot:
                 chats[res['message']['chat']['id']] = res['message']['text']
             return chats
         else:
-            return False
+            return None
 
     async def sendmessage(self, chat_id: str, message: str, session: aiohttp.ClientSession):
         headers = {
@@ -163,45 +243,25 @@ class Zvonilbot:
             try:
                 assert res.status == 200
             except Exception as error:
-                error_msg = '\r' + time.strftime('%d.%m.%Y %H:%M:%S',
-                                                 time.localtime()) + ' | ' + chat_id + ' | Send message | ' +\
-                                                 str(res.status) + str(error)
-                print(error_msg)
-                return {'errors': 'Sending message error: ' + error}
+                self.logger.error('::Can\'t send message to bot. Chat ' + chat_id + '.'+str(res.status) + str(error))
+                return None
             else:
                 answer = await res.json()
 
         if 'ok' in answer and answer['ok']:
             return answer
         else:
-            return {'errors': answer}
-
-        """
-        try:
-            r = requests.get(self.boturl+'sendMessage', params={'chat_id': chat_id, 'text': message})
-        except requests.exceptions.ConnectionError as error:
-            error_msg = '\r'+time.strftime('%d.%m.%Y %H:%M:%S', time.localtime())+' | ' + chat_id + ' | Send message | ' + str(error)
-            print(error_msg)
-            return {'errors': 'Connection error: '+error}
-
-        if r.status_code != 200:
-            return {'errors': 'Error status code: '+str(r.status_code)}
-        
-
-        answer = r.json()
-        """
-
-
+            self.logger.error('::Not ok response from bot while sending message. Chat ' + chat_id + '.')
+            return None
 
     async def _getinfo_sendmessage(self, chat_id: str, phone: str, session: aiohttp.ClientSession):
         text = await self.phone_to_msg(phone, session)
         sent = await self.sendmessage(chat_id, text, session)
-        if 'errors' in sent:
-            print(sent['errors'])
-            return sent['errors']
-        else:
-            print(sent)
+        if sent:
             return sent
+        else:
+            return None
+
         """
         phone = self._check_phone(phone, r'^(8|7|\+)?\d{10,12}$', r' |\-|\(|\)')
         if phone:
@@ -222,26 +282,38 @@ class Zvonilbot:
                                                  categories='\n'.join(info['categories']),
                                                  ratings='\n'.join(info['ratings']))
         """
+    def _get_session(self):
+        limit = round(1 / self._delay) if self._delay != 0 else 0
+        connector = aiohttp.TCPConnector(limit_per_host=limit)
+        return aiohttp.ClientSession(connector=connector, headers=self._headers)
 
     async def _longpolling(self):
+        """
+        limit = round(1 / self._delay) if self._delay != 0 else 0
+        connector = aiohttp.TCPConnector(limit_per_host=limit)
+        async with aiohttp.ClientSession(connector=connector, headers=self._headers) as session:
+        """
+        session = self._get_session()
         while True:
-            messages = self.getupdates()
-            if messages and 'errors' not in messages:
-                print(messages)
+            messages = await self.getupdates(session)
+            if messages:
+                # async with aiohttp.ClientSession(connector=connector, headers=self._headers) as session:
+                for msg in messages:
+                    phone = messages[msg]
+                    info_task = await asyncio.create_task(self._getinfo_sendmessage(msg, phone, session))
+                    if info_task:
+                        self.logger.info(phone + ':Done!')
+                    else:
+                        self.logger.error(phone + ':Some problems occurred!')
 
-                limit = round(1 / self._delay) if self._delay != 0 else None
-                connector = aiohttp.TCPConnector(limit=limit)
-                async with aiohttp.ClientSession(connector=connector, headers=self._headers) as session:
-                    for msg in messages:
-                        phone = messages[msg]
-                        info_task = await asyncio.create_task(self._getinfo_sendmessage(msg, phone, session))
-                        print(time.strftime('%d.%m.%Y %H:%M:%S', time.localtime())+' Done: '+str(info_task))
             else:
-                print(time.strftime('%d.%m.%Y %H:%M:%S', time.localtime())+' No updates...')
+                self.logger.debug(':No updates...')
+                # print(time.strftime('%d.%m.%Y %H:%M:%S', time.localtime())+' No updates...')
             await asyncio.sleep(self._bot_timeout)
 
+
     def longpolling(self):
-        print('Long polling has started. (Press CTRL+C to stop)')
+        self.logger.debug('Long polling has started. (Press CTRL+C to stop)')
         #asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         #asyncio.run(self._longpolling())
         loop = asyncio.get_event_loop()
@@ -250,13 +322,14 @@ class Zvonilbot:
             loop.run_forever()
         except KeyboardInterrupt:
             loop.stop()
-            exit('Long polling has stopped.')
+            self.logger.debug('Long polling has stopped.')
+            exit()
 
 
     def startserver(self, route: str = '/'):
         print('Server has started.')
         app = web.Application()
-        app.add_routes([web.get(route, self._startserver)])
+        app.add_routes([web.get(route, self._webhook)])
         web.run_app(app)
         print('Server has stopped.')
 
@@ -266,20 +339,23 @@ class Zvonilbot:
         phone = data['message']['text']
         phone = self._check_phone(phone, r'^(8|7|\+)?\d{10,12}$', r' |\-|\(|\)')
 
-        async with aiohttp.ClientSession() as session:
-            text = await self.phone_to_msg(phone, session)
-            resp = await self.sendmessage(chat_id, text, session)
+        session = self._get_session()
+        #async with aiohttp.ClientSession() as session:
+        text = await self.phone_to_msg(phone, session)
+        resp = await self.sendmessage(chat_id, text, session)
 
-        if 'errors' in resp:
+        if resp:
+            self.logger.info(phone + ':Done!')
             return web.Response(500)
         else:
+            self.logger.error(phone + ':Some problems occurred!')
             return web.Response(200)
 
 
 if __name__ == '__main__':
     bot = Zvonilbot('1374908831:AAEv6e_nJ3JgsTD6HX82fSLlWAwXeTiNQEI')
-    #bot.longpolling()
-    bot.startserver()
+    bot.longpolling()
+    #bot.startserver()
     """
     try:
         bot.longpolling()
