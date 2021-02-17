@@ -22,11 +22,10 @@ class Zvonilbot:
         self._delay = 0.2
         # Pause between getting bot updates
         self._bot_timeout = 30
-
+        self.session = None
         self.logger = self.get_logger()
-
-
-        self.message = {'wrong number': 'Ыть! Неправильно набран номер.\nПопробуй использовать цифры.',
+        self.message = {'start': 'Проверю номер телефона на спам и роботов. Жду номер...',
+                        'wrong number': 'Ыть! Неправильно набран номер.\nПопробуй использовать цифры.',
                         'error': 'Упс! Что-то пошло не так. Попробуй ещё раз...',
                         'ok': '{}\nУ меня ничего нет на него... Возможно это и не спам!',
                         'not ok': 'Так-так. Подозреваемый {phone} \
@@ -115,6 +114,8 @@ class Zvonilbot:
         return logging.getLogger(__name__)
 
     def _check_phone(self, string: str, pattern: str = '', delete: str = '') -> str:
+        check = False
+
         if delete:
             string = re.sub(delete, '', string)
 
@@ -255,7 +256,10 @@ class Zvonilbot:
             return None
 
     async def _getinfo_sendmessage(self, chat_id: str, phone: str, session: aiohttp.ClientSession):
-        text = await self.phone_to_msg(phone, session)
+        if phone == '/start':
+            text = self.message['start']
+        else:
+            text = await self.phone_to_msg(phone, session)
         sent = await self.sendmessage(chat_id, text, session)
         if sent:
             return sent
@@ -283,9 +287,11 @@ class Zvonilbot:
                                                  ratings='\n'.join(info['ratings']))
         """
     def _get_session(self):
-        limit = round(1 / self._delay) if self._delay != 0 else 0
-        connector = aiohttp.TCPConnector(limit_per_host=limit)
-        return aiohttp.ClientSession(connector=connector, headers=self._headers)
+        if not self.session:
+            limit = round(1 / self._delay) if self._delay != 0 else 0
+            connector = aiohttp.TCPConnector(limit_per_host=limit)
+            self.session = aiohttp.ClientSession(connector=connector, headers=self._headers)
+        return self.session
 
     async def _longpolling(self):
         """
@@ -298,13 +304,28 @@ class Zvonilbot:
             messages = await self.getupdates(session)
             if messages:
                 # async with aiohttp.ClientSession(connector=connector, headers=self._headers) as session:
+                info_task = []
                 for msg in messages:
                     phone = messages[msg]
-                    info_task = await asyncio.create_task(self._getinfo_sendmessage(msg, phone, session))
-                    if info_task:
+                    info_task.append(self._getinfo_sendmessage(msg, phone, session))
+                    #info_task[phone] = asyncio.create_task(self._getinfo_sendmessage(msg, phone, session))
+
+                results = await asyncio.gather(*info_task)
+                for msg, res in zip(messages, results):
+                    phone = messages[msg]
+                    if res:
                         self.logger.info(phone + ':Done!')
                     else:
                         self.logger.error(phone + ':Some problems occurred!')
+                """
+                for phone in info_task:
+                    result = await info_task[phone]
+                    if result:
+                        self.logger.info(phone + ':Done!')
+                    else:
+                        self.logger.error(phone + ':Some problems occurred!')
+                """
+
 
             else:
                 self.logger.debug(':No updates...')
@@ -337,11 +358,19 @@ class Zvonilbot:
         data = await request.json()
         chat_id = data['message']['chat']['id']
         phone = data['message']['text']
-        phone = self._check_phone(phone, r'^(8|7|\+)?\d{10,12}$', r' |\-|\(|\)')
 
         session = self._get_session()
-        #async with aiohttp.ClientSession() as session:
-        text = await self.phone_to_msg(phone, session)
+        # async with aiohttp.ClientSession() as session:
+
+        if phone == '/start':
+            text = self.message['start']
+        else:
+            phone = self._check_phone(phone, r'^(8|7|\+)?\d{10,12}$', r' |\-|\(|\)')
+            if not phone:
+                text = self.message['wrong number']
+            else:
+                text = await self.phone_to_msg(phone, session)
+
         resp = await self.sendmessage(chat_id, text, session)
 
         if resp:

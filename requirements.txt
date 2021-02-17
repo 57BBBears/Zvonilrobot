@@ -8,7 +8,6 @@ certifi==2020
 chardet==3.0.
 idna==2.10
 multidict==5.
-requests==2.2
 soupsieve==2.
 typing-extens
 urllib3==1.26
