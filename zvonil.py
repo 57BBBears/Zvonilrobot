@@ -4,8 +4,8 @@ import asyncio
 import aiohttp
 from aiohttp import web
 import json
-import logging
 import logging.config
+import sys
 
 # TODO add format string for output message (before, result, after)
 # TODO send info messages back during getting info (Starting..., Busy... etc.)
@@ -79,7 +79,7 @@ class Zvonilbot:
                     }
                 },
                 'loggers': {
-                    '': {  # root logger
+                    __name__: {
                         'handlers': ['console', 'bot', 'error'],
                         'level': 'DEBUG',
                         #'propagate': True,
@@ -266,26 +266,6 @@ class Zvonilbot:
         else:
             return None
 
-        """
-        phone = self._check_phone(phone, r'^(8|7|\+)?\d{10,12}$', r' |\-|\(|\)')
-        if phone:
-            text = await self.phone_to_msg(phone, session)
-        else:
-            text = self.message['wrong number']
-
-        
-            return await self.sendmessage(chat_id, text, session)
-        print(info)
-        if 'errors' in info:
-            text = self.message['send error']
-        elif not info['ratings'] and not info['categories']:
-            text = self.message['ok'].format(phone)
-        else:
-            text = self.message['not ok'].format(phone=phone,
-                                                 head='\n'.join(info['head']),
-                                                 categories='\n'.join(info['categories']),
-                                                 ratings='\n'.join(info['ratings']))
-        """
     def _get_session(self):
         if not self.session:
             limit = round(1 / self._delay) if self._delay != 0 else 0
@@ -317,22 +297,11 @@ class Zvonilbot:
                         self.logger.info(phone + ':Done!')
                     else:
                         self.logger.error(phone + ':Some problems occurred!')
-                """
-                for phone in info_task:
-                    result = await info_task[phone]
-                    if result:
-                        self.logger.info(phone + ':Done!')
-                    else:
-                        self.logger.error(phone + ':Some problems occurred!')
-                """
-
-
             else:
                 self.logger.debug(':No updates...')
-                # print(time.strftime('%d.%m.%Y %H:%M:%S', time.localtime())+' No updates...')
             await asyncio.sleep(self._bot_timeout)
 
-
+    # TODO prevent getting last update after restarting longpolling
     def longpolling(self):
         self.logger.debug('Long polling has started. (Press CTRL+C to stop)')
         #asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -347,7 +316,7 @@ class Zvonilbot:
             exit()
 
 
-    def startserver(self, route: str = '/'):
+    def start_server(self, route: str = '/'):
         print('Server has started.')
         app = web.Application()
         app.add_routes([web.get(route, self._webhook)])
@@ -355,9 +324,30 @@ class Zvonilbot:
         print('Server has stopped.')
 
     async def _webhook(self, request):
-        data = await request.json()
-        chat_id = data['message']['chat']['id']
-        phone = data['message']['text']
+        """
+        try:
+            json.loads(request)
+        except ValueError as error:
+            self.logger.error(':Bad request: ' + request)
+            return web.Response(status=500, text='')
+        """
+        try:
+            # TODO test content type
+            if request.content_type != 'application/json':
+                self.logger.error(':Bad request: ' + request.content_type + await request.text())
+                return web.Response(status=500, text='')
+        except AttributeError:
+            #request is a string
+            data = json.loads(request)
+        else:
+            #request is a aiohttp.web.Request
+            data = await request.json()
+
+        if data['message']:
+            chat_id = data['message']['chat']['id']
+            phone = data['message']['text']
+        else:
+            return web.Response(status=500, text='')
 
         session = self._get_session()
         # async with aiohttp.ClientSession() as session:
@@ -375,28 +365,29 @@ class Zvonilbot:
 
         if resp:
             self.logger.info(phone + ':Done!')
-            return web.Response(500)
+            return web.Response(status=200, text='')
         else:
             self.logger.error(phone + ':Some problems occurred!')
-            return web.Response(200)
+            return web.Response(status=500, text='')
+
+    def start_running(self):
+        #stop console output to prevent writing to html
+        self.logger.removeHandler(self.logger.handlers[0])
+        post = sys.stdin.read()
+        if post:
+            loop = asyncio.get_event_loop()
+            response = loop.run_until_complete(self._webhook(post))
+            if response.status == 200:
+                print("Status: 200")
+                print("Content-Type: text/html\n")
+
+        print('Status: 500')
+        print("Content-Type: text/html\n")
+
 
 
 if __name__ == '__main__':
     bot = Zvonilbot('1374908831:AAEv6e_nJ3JgsTD6HX82fSLlWAwXeTiNQEI')
-    bot.longpolling()
+    #bot.longpolling()
     #bot.startserver()
-    """
-    try:
-        bot.longpolling()
-    except KeyboardInterrupt:
-        exit()
-    """
-    """
-    msgs = bot.getupdates()
-    if msgs and 'errors' not in msgs:
-        for chat in msgs:
-            print(str(chat)+':'+str(msgs[chat]))
-    """
-    #print(bot.sendmessage(chat_id='101633597', message='hello, world'))
-    #info = bot.getinfo('89658203265')
-    #print(info)
+    bot.start_running()
