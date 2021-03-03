@@ -7,6 +7,7 @@ import json
 import logging.config
 import sys
 
+
 # TODO add format string for output message (before, result, after)
 # TODO send info messages back during getting info (Starting..., Busy... etc.)
 class Zvonilbot:
@@ -112,7 +113,7 @@ class Zvonilbot:
         logger.addHandler(error_handler)
         logger.addHandler(console)
         """
-        #bot handler log just info messages
+        # bot handler log just info messages
         logger = logging.getLogger(__name__)
         logger.handlers[1].addFilter(type('', (logging.Filter,),
                                           {'filter': staticmethod(lambda r: r.levelno == logging.INFO)}))
@@ -212,7 +213,7 @@ class Zvonilbot:
     async def getupdates(self, session, offset=''):
         params = {}
         if offset:
-            #get update with offset explicitly
+            # get update with offset explicitly
             params['offset'] = offset
         elif self.update_id is not None:
             params['offset'] = self.update_id+1
@@ -288,7 +289,7 @@ class Zvonilbot:
         while True:
             messages = await self.getupdates(session)
             if messages:
-                # async with aiohttp.ClientSession(connector=connector, headers=self._headers) as session:
+                #async with aiohttp.ClientSession(connector=connector, headers=self._headers) as session:
                 info_task = []
                 for msg in messages:
                     phone = messages[msg]
@@ -320,7 +321,6 @@ class Zvonilbot:
             self.logger.debug('Long polling has stopped.')
             exit()
 
-
     def start_server(self, route: str = '/'):
         print('Server has started.')
         app = web.Application()
@@ -342,10 +342,10 @@ class Zvonilbot:
                 self.logger.error(':Bad request: ' + request.content_type + await request.text())
                 return web.Response(status=500, text='')
         except AttributeError:
-            #request is a string
+            # request is a string
             data = json.loads(request)
         else:
-            #request is a aiohttp.web.Request
+            # request is a aiohttp.web.Request
             data = await request.json()
 
         if data['message']:
@@ -390,9 +390,8 @@ class Zvonilbot:
         print("Content-Type: text/html\n")
 
 
-
 if __name__ == '__main__':
-    bot = Zvonilbot('1374908831:AAEv6e_nJ3JgsTD6HX82fSLlWAwXeTiNQEI')
+    bot = Zvonilbot('API Token')
     #bot.longpolling()
     #bot.startserver()
     bot.start_running()
