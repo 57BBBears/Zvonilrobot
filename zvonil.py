@@ -28,11 +28,11 @@ class Zvonilbot:
         self.message = {'start': 'Проверю номер телефона на спам и роботов. Жду номер...',
                         'wrong number': 'Ыть! Неправильно набран номер.\nПопробуй использовать цифры.',
                         'error': 'Упс! Что-то пошло не так. Попробуй ещё раз...',
-                        'ok': '{}\nУ меня ничего нет на него... Возможно это и не спам!',
+                        'ok': 'Хм... {} У меня ничего нет на него... Возможно это и не спам!',
                         'not ok': 'Так-так. Подозреваемый {phone} \
                                    \n\n{head} \
-                                   \n\nКатегории:\n{categories}\
-                                   \n\nРейтинг:\n{ratings}',
+                                   \n\nКатегории\n{categories}\
+                                   \n\nРейтинг\n{ratings}',
                         404: 'Номер не найден ^.^ Проверь номер и попробуй ещё раз.'}
         # TODO add config
     
@@ -69,7 +69,8 @@ class Zvonilbot:
                         'class': 'logging.handlers.RotatingFileHandler',
                         'filename': 'bot.log',
                         'maxBytes': 50_000_024,
-                        'backupCount': 10
+                        'backupCount': 10,
+                        'encoding': 'utf-8'
                     },
                     'error': {
                         'level': error_lvl,
@@ -77,7 +78,8 @@ class Zvonilbot:
                         'class': 'logging.handlers.RotatingFileHandler',
                         'filename': 'error.log',
                         'maxBytes': 10_000_024,
-                        'backupCount': 10
+                        'backupCount': 10,
+                        'encoding': 'utf-8'
                     }
                 },
                 'loggers': {
@@ -348,11 +350,16 @@ class Zvonilbot:
             # request is a aiohttp.web.Request
             data = await request.json()
 
-        if data['message']:
-            chat_id = data['message']['chat']['id']
-            phone = data['message']['text']
+        # check type of msg (message/edited) and protect against bots
+        if 'message' in data and data['message'] and not data['message']['from']['is_bot']:
+            key = 'message'
+        elif 'edited_message' in data and data['edited_message'] and not data['edited_message']['from']['is_bot']:
+            key = 'edited_message'
         else:
             return web.Response(status=500, text='')
+
+        chat_id = data[key]['chat']['id']
+        phone = data[key]['text']
 
         session = self._get_session()
         # async with aiohttp.ClientSession() as session:
@@ -369,10 +376,10 @@ class Zvonilbot:
         resp = await self.sendmessage(chat_id, text, session)
 
         if resp:
-            self.logger.info(phone + ':Done!')
+            self.logger.info(f'{phone}:{chat_id}:{text}')
             return web.Response(status=200, text='')
         else:
-            self.logger.error(phone + ':Some problems occurred!')
+            self.logger.error(f'{phone}:{chat_id}:Some problems occurred!')
             return web.Response(status=500, text='')
 
     def start_running(self):
