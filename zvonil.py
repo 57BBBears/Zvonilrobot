@@ -31,7 +31,8 @@ class Zvonilbot:
                         'not ok': 'Так-так. Подозреваемый {phone} \
                                    \n\n{head} \
                                    \n\nКатегории:\n{categories}\
-                                   \n\nРейтинг:\n{ratings}'}
+                                   \n\nРейтинг:\n{ratings}',
+                        404: 'Номер не найден ^.^ Проверь номер и попробуй ещё раз.'}
         # TODO add config
     
     def get_logger(self, log_format='%(asctime)s:%(name)s:%(message)s',
@@ -111,7 +112,11 @@ class Zvonilbot:
         logger.addHandler(error_handler)
         logger.addHandler(console)
         """
-        return logging.getLogger(__name__)
+        #bot handler log just info messages
+        logger = logging.getLogger(__name__)
+        logger.handlers[1].addFilter(type('', (logging.Filter,),
+                                          {'filter': staticmethod(lambda r: r.levelno == logging.INFO)}))
+        return logger
 
     def _check_phone(self, string: str, pattern: str = '', delete: str = '') -> str:
         check = False
@@ -148,14 +153,12 @@ class Zvonilbot:
             try:
                 assert r.status == 200
             except Exception as error:
-                self.logger.error(phone+':Parser connection error. '+str(r.status) + ' ' + str(error))
-                """
-                error_msg += '\r' + time.strftime('%d.%m.%Y %H:%M:%S',
-                                                  time.localtime()) + ' | ' + phone + '| Connection | ' +\
-                                                  str(r.status) + ' ' + str(error)
-                print(error_msg)
-                """
-                return None
+                if r.status == 404:
+                    self.logger.error(phone + ':Parser 404 error. ' + str(r.status) + ' ' + str(error))
+                    return {'error': 404}
+                else:
+                    self.logger.error(phone+':Parser connection error. '+str(r.status) + ' ' + str(error))
+                    return None
 
             html = await r.text()
 
@@ -195,6 +198,8 @@ class Zvonilbot:
 
             if not info:
                 text = self.message['error']
+            elif 'error' in info:
+                text = self.message[info['error']]
             elif not info['ratings'] and not info['categories']:
                 text = self.message['ok'].format(phone)
             else:
